@@ -22,6 +22,8 @@ screen permanently, in the statusline, instead of buried in the transcript.
 - **Backgrounded work stops blocking.** `bg <n>` says a task is now waiting on something detached
   (a build, a long remote job): it stays open but drops out of the suggestion, so the console picks
   up the next task that does not need its result. `--blocks <ids>` holds back the ones that do.
+- **An interactive board.** `tasks_tui.py` opens the queue in a curses TUI: arrow keys to move,
+  `Enter` to pick a task, then start it now, background it, finish it or drop it.
 - **One queue per project, per session under `$HOME`.** Nothing is ever copied between queues, so
   one console's board never shows another's work.
 
@@ -34,6 +36,7 @@ screen permanently, in the statusline, instead of buried in the transcript.
 | `○` | pending, not started |
 | `⊙` | pending, added by the prompt splitter |
 | `⏳` | running in the background, not holding the console |
+| `●` | just finished — the receipt stays until the next task starts or finishes |
 
 ## Install
 
@@ -43,7 +46,7 @@ cd claude-task-manager
 ./install.sh
 ```
 
-It copies the three files into `~/.claude/hooks/`, wires the `UserPromptSubmit` and `Stop` hooks
+It copies the hook files into `~/.claude/hooks/`, wires the `UserPromptSubmit` and `Stop` hooks
 plus the statusline into `~/.claude/settings.json` (backing the file up first and keeping any hooks
 you already have), and runs the test suite. Restart Claude Code afterwards.
 
@@ -59,6 +62,7 @@ python3 ~/.claude/hooks/pending_tasks.py done 3        # finish it
 python3 ~/.claude/hooks/pending_tasks.py drop 3        # abandon it
 python3 ~/.claude/hooks/pending_tasks.py add "text"    # queue by hand
 python3 ~/.claude/hooks/pending_tasks.py step 3 "the concrete next action"
+python3 ~/.claude/hooks/tasks_tui.py                   # interactive board
 ```
 
 `step` records what to actually do next rather than restating the task title; it is the line the
@@ -80,12 +84,15 @@ Cold queues with nothing open are pruned after a week.
 | `hooks/pending_tasks.py` | the queue: hook entry points and the CLI |
 | `hooks/statusline.sh` | statusline renderer — session facts on one line, the board underneath |
 | `hooks/test_pending_tasks.py` | cross-session isolation, `bg` hand-over, board rendering |
+| `hooks/tasks_tui.py` | interactive curses board: pick a task, act on it |
+| `hooks/test_tasks_tui.py` | TUI rendering and key handling |
 | `install.sh` | copies the files and wires `settings.json` |
 
 ## Tests
 
 ```bash
 python3 hooks/test_pending_tasks.py
+python3 hooks/test_tasks_tui.py
 ```
 
 Runs against a throwaway `$HOME`; it never touches a real queue.

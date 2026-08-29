@@ -45,7 +45,7 @@ assert "fa deploy" in a, a
 
 # `done 1` typed in B (no CLAUDE_PROJECT_DIR, unreliable cwd) must close B's task 1, never A's.
 run("bbbbbbbb", ["done", "1"])
-assert "alt task" not in board("bbbbbbbb"), board("bbbbbbbb")
+assert "● 1. alt task" in board("bbbbbbbb"), board("bbbbbbbb")
 assert "fa deploy" in board("aaaaaaaa"), "BLEED: B's `done 1` closed A's task"
 
 print("OK: no cross-session bleed")
@@ -96,3 +96,16 @@ b = run("eeeeeeee", ["board"])
 assert "○ 2. doi" in b, b
 
 print("OK: pending marked ○")
+
+# --- a closed task is shown once, as ●, and gone as soon as work moves on -------------------
+submit("ffffffff", "primul")
+submit("ffffffff", "al doilea")
+run("ffffffff", ["done", "1"])
+b = board("ffffffff")
+assert "● 1. primul" in b, "the task just closed must be visible as ●:\n" + b
+run("ffffffff", ["doing", "2"])
+b = board("ffffffff")
+assert "primul" not in b, "the ● must go once the next task starts:\n" + b
+run("ffffffff", ["done", "2"])
+assert "● 2. al doilea" in board("ffffffff") and "primul" not in board("ffffffff")
+print("OK: ● marks the task just closed, cleared when work moves on")

@@ -8,8 +8,8 @@ SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SETTINGS="$CLAUDE_DIR/settings.json"
 
 mkdir -p "$CLAUDE_DIR/hooks" "$CLAUDE_DIR/pending"
-cp "$SRC/hooks/pending_tasks.py" "$SRC/hooks/test_pending_tasks.py" "$SRC/hooks/statusline.sh" "$CLAUDE_DIR/hooks/"
-chmod +x "$CLAUDE_DIR/hooks/pending_tasks.py" "$CLAUDE_DIR/hooks/statusline.sh"
+cp "$SRC"/hooks/*.py "$SRC/hooks/statusline.sh" "$CLAUDE_DIR/hooks/"
+chmod +x "$CLAUDE_DIR/hooks/pending_tasks.py" "$CLAUDE_DIR/hooks/tasks_tui.py" "$CLAUDE_DIR/hooks/statusline.sh"
 
 [ -f "$SETTINGS" ] || echo '{}' > "$SETTINGS"
 cp "$SETTINGS" "$SETTINGS.bak-$(date +%Y%m%d%H%M%S)"
@@ -36,4 +36,5 @@ print("wired into", settings)
 PY
 
 python3 "$CLAUDE_DIR/hooks/test_pending_tasks.py"
+python3 "$CLAUDE_DIR/hooks/test_tasks_tui.py"
 echo "Done. Restart Claude Code to pick up the hooks."

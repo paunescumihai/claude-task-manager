@@ -20,6 +20,7 @@ Modes:
     Board markers: >  the one to do next (accepts a bare `.`)   ▶  in progress
                    ○  pending, not started   ⊙  pending, added by the prompt splitter
                    ⏳ running in the background, not holding the console
+                   ●  just finished; it clears as soon as the next task starts or finishes
 
     doing N         mark item N as the one being worked on (clears any other 'doing')
     bg N [--blocks IDS]
@@ -166,9 +167,7 @@ def load(p):
             d = json.load(f)
     except Exception:
         return {"next": 1, "items": []}
-    # Older versions marked an item done and left it in the file. Finished means gone, so a queue
-    # written by one of those gets cleaned the first time anyone opens it.
-    d["items"] = [i for i in d.get("items", []) if i.get("state") != "done"]
+    d.setdefault("items", [])
     return d
 
 
@@ -182,6 +181,45 @@ def save(p, d):
 
 def open_items(d):
     return [i for i in d["items"] if i["state"] != "done"]
+
+
+def display_items(d):
+    """What a board shows: the open queue plus the task just finished, still marked ●.
+
+    Seeing the item you just closed is the confirmation that it closed; keeping it after work has
+    moved on would be clutter, so `close_finished` drops it as soon as the next task starts or
+    finishes."""
+    return sorted(d["items"], key=lambda i: i["id"])
+
+
+def close_finished(d, keep=None):
+    """Forget every finished item except `keep` -- work has moved on, so the ● has served its turn."""
+    d["items"] = [i for i in d["items"] if i["state"] != "done" or i["id"] == keep]
+
+
+def set_state(d, mode, n):
+    """Move item `n` to `mode` ("doing", "done" or "drop"). False if there is no such item.
+
+    The board TUI drives the queue through this too, so a click and a `done N` cannot drift apart."""
+    if not any(i["id"] == n for i in d["items"]):
+        return False
+    for i in d["items"]:
+        if mode == "doing" and i["state"] == "doing" and i["id"] != n:
+            i["state"] = "pending"
+        if i["id"] != n:
+            continue
+        if mode == "drop":
+            d["items"] = [x for x in d["items"] if x["id"] != n]
+        elif mode == "done":
+            # Kept, marked ●, until the next task starts or finishes: that is the receipt for the
+            # one just closed. `log` still carries the text for the run summary.
+            d.setdefault("log", []).append({"text": i["text"], "at": int(time.time())})
+            i["state"] = "done"
+            close_finished(d, keep=n)
+        else:
+            i["state"] = "doing"
+            close_finished(d)
+    return True
 
 
 def blocked_ids(d):
@@ -296,8 +334,9 @@ def cmd_stop():
 
 def render(d):
     out = []
-    for i in open_items(d):
-        mark = {"doing": "▶ ", "bg": "⏳ "}.get(i["state"], "⊙ " if i.get("auto") else "○ ")
+    for i in display_items(d):
+        mark = {"doing": "▶ ", "bg": "⏳ ", "done": "● "}.get(
+            i["state"], "⊙ " if i.get("auto") else "○ ")
         out.append("%s%d. %s" % (mark, i["id"], i["text"]))
     return "\n".join(out)
 
@@ -450,7 +489,7 @@ def cmd_line():
 def cmd_board(width=176, rows=5):
     """The queue itself, one task per row, under the statusline -- the user asked to see the whole
     list on screen at all times, not just a count."""
-    items = _items()
+    items = display_items(load(queue_path()))
     if not items:
         return
     it, action = next_step()
@@ -461,7 +500,8 @@ def cmd_board(width=176, rows=5):
         if it is not None and i["id"] == it["id"] and same:
             mark = ">"
         else:
-            mark = {"doing": "▶", "bg": "⏳"}.get(i["state"], "⊙" if i.get("auto") else "○")
+            mark = {"doing": "▶", "bg": "⏳", "done": "●"}.get(
+                i["state"], "⊙" if i.get("auto") else "○")
         row = "%s %d. %s" % (mark, i["id"], cut(i["text"], width))
         print(row + "   [ . ]" if mark == ">" else row)
     if len(items) > rows:
@@ -512,21 +552,8 @@ def main():
             if mode == "doing" or not cur:
                 sys.exit("%s needs an item id (%s)" % (mode, p))
             n = cur[0]["id"]
-        if not any(i["id"] == n for i in d["items"]):
+        if not set_state(d, mode, n):
             sys.exit("no item %d in %s" % (n, p))
-        for i in d["items"]:
-            if mode == "doing" and i["state"] == "doing" and i["id"] != n:
-                i["state"] = "pending"
-            if i["id"] == n:
-                if mode in ("drop", "done"):
-                    # Finished means gone: a "done" item that lingers in the file is one more thing
-                    # the next reader has to decide about, and it kept showing on the board. Only
-                    # the text is kept, in `log`, so the run can be summarised when the queue empties.
-                    if mode == "done":
-                        d.setdefault("log", []).append({"text": i["text"], "at": int(time.time())})
-                    d["items"] = [x for x in d["items"] if x["id"] != n]
-                else:
-                    i["state"] = "doing"
     elif mode == "bg":
         # A task that is now waiting on something detached (a build, a long run, a remote job).
         # It stays open and owned, but it no longer occupies the console, so the queue hands the
@@ -569,4 +596,5 @@ def main():
     print(render(d) or "(queue empty)")
 
 
-main()
+if __name__ == "__main__":
+    main()
