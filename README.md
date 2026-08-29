@@ -38,7 +38,7 @@ screen permanently, in the statusline, instead of buried in the transcript.
 ## Install
 
 ```bash
-git clone https://github.com/<you>/claude-task-manager
+git clone https://github.com/paunescumihai/claude-task-manager
 cd claude-task-manager
 ./install.sh
 ```
