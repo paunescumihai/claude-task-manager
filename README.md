@@ -30,6 +30,12 @@ screen permanently, in the statusline, instead of buried in the transcript.
   up the next task that does not need its result. `--blocks <ids>` holds back the ones that do.
 - **An interactive board.** `tasks_tui.py` opens the queue in a curses TUI: arrow keys to move,
   `Enter` to pick a task, then start it now, background it, finish it or drop it.
+- **Picks up where the console left off.** A `SessionStart` hook hands the open queue back when a
+  console opens or resumes, so a backlog is visible before you type anything; `SessionEnd` stamps
+  the queue, and `all` flags the boards whose session is gone but whose tasks are not.
+- **Undo, edit, and a record of what got done.** `undo` puts back the last task closed or dropped
+  (5 deep), `edit N` rewords a task without losing the id everything else refers to, and `report`
+  prints what actually finished, with the time tracked between `doing` and `done`.
 - **One queue per project, per session under `$HOME`.** Nothing is ever copied between queues, so
   one console's board never shows another's work.
 
@@ -68,6 +74,10 @@ python3 ~/.claude/hooks/pending_tasks.py done 3        # finish it
 python3 ~/.claude/hooks/pending_tasks.py drop 3        # abandon it
 python3 ~/.claude/hooks/pending_tasks.py add "text"    # queue by hand
 python3 ~/.claude/hooks/pending_tasks.py step 3 "the concrete next action"
+python3 ~/.claude/hooks/pending_tasks.py done 3 4 5    # close several at once
+python3 ~/.claude/hooks/pending_tasks.py edit 3 "text"  # reword item 3, same id
+python3 ~/.claude/hooks/pending_tasks.py undo          # put back the last closed or dropped task
+python3 ~/.claude/hooks/pending_tasks.py report 7      # what got finished in the last 7 days
 python3 ~/.claude/hooks/pending_tasks.py all           # every queue that still has open tasks
 python3 ~/.claude/hooks/pending_tasks.py prune         # drop cold empty queues and dead pointers
 python3 ~/.claude/hooks/tasks_tui.py                   # interactive board

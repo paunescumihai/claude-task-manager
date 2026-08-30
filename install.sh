@@ -27,7 +27,8 @@ d.setdefault("statusLine", {"type": "command", "command": "bash %s/hooks/statusl
                             "refreshInterval": 10})
 
 hooks = d.setdefault("hooks", {})
-for event, mode in (("UserPromptSubmit", "submit"), ("Stop", "stop")):
+for event, mode in (("UserPromptSubmit", "submit"), ("Stop", "stop"),
+                    ("SessionStart", "session-start"), ("SessionEnd", "session-end")):
     cmd = "%s %s" % (hook, mode)
     groups = hooks.setdefault(event, [])
     if any(h.get("command") == cmd for g in groups for h in g.get("hooks", [])):

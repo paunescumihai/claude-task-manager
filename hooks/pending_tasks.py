@@ -22,6 +22,13 @@ Modes:
     list            the queue, numbered, for a human or the assistant to read
     all             every queue that still holds open tasks -- a session ends and its board stays
                     behind, and nothing else shows which ones are still unfinished
+    edit N TEXT     reword item N in place, keeping its id -- every console, the board and `.`
+                    refer to tasks by id, so drop + add is not the same thing
+    undo            put back the last task closed or dropped (5 deep)
+    report [DAYS]   what actually got finished (default: the last day), with tracked time -- a
+                    task stamps `started` when it goes `doing` and its duration when it closes
+    session-start   SessionStart hook: hand the open queue back when a console opens or resumes
+    session-end     SessionEnd hook: stamp a queue whose session ended, so `all` can flag it
     prune           drop cold empty queues and the per-session pointers left behind by ended
                     sessions (also runs on every `submit`)
     add TEXT        queue an item by hand
@@ -38,7 +45,8 @@ Modes:
                    ⏳ running in the background, not holding the console
                    ●  just finished; it clears as soon as the next task starts or finishes
 
-    doing N         mark item N as the one being worked on (clears any other 'doing')
+    doing N         mark item N as the one being worked on (clears any other 'doing');
+                    `done` and `drop` also take several ids at once
     bg N [--blocks IDS]
                     item N now waits on something detached, so it stops holding the console:
                     it stays open, drops out of the next-step suggestion, and the queue hands
@@ -282,29 +290,101 @@ def close_finished(d, keep=None):
     d["items"] = [i for i in d["items"] if i["state"] != "done" or i["id"] == keep]
 
 
+TRASH = 5      # how many closed/dropped items `undo` can walk back through
+
+
+def push_trash(d, item, was):
+    """Remember what a task looked like before it was closed or dropped, so `undo` can put it back.
+
+    A `drop` on the wrong id used to be unrecoverable -- the text was gone from the file with
+    nothing to retype it from."""
+    t = d.setdefault("trash", [])
+    t.append({"item": dict(item), "was": was, "at": int(time.time())})
+    del t[:-TRASH]
+
+
 def set_state(d, mode, n):
     """Move item `n` to `mode` ("doing", "done" or "drop"). False if there is no such item.
 
     The board TUI drives the queue through this too, so a click and a `done N` cannot drift apart."""
     if not any(i["id"] == n for i in d["items"]):
         return False
+    now = int(time.time())
     for i in d["items"]:
         if mode == "doing" and i["state"] == "doing" and i["id"] != n:
             i["state"] = "pending"
         if i["id"] != n:
             continue
         if mode == "drop":
+            push_trash(d, i, i["state"])
             d["items"] = [x for x in d["items"] if x["id"] != n]
         elif mode == "done":
             # Kept, marked ●, until the next task starts or finishes: that is the receipt for the
             # one just closed. `log` still carries the text for the run summary.
-            d.setdefault("log", []).append({"text": i["text"], "at": int(time.time())})
+            push_trash(d, i, i["state"])
+            entry = {"id": n, "text": i["text"], "at": now}
+            # Only a task that was actually started has a duration; one closed straight from
+            # pending would otherwise report the time since it was queued, which is waiting, not work.
+            if i.get("started"):
+                entry["secs"] = now - int(i["started"])
+            d.setdefault("log", []).append(entry)
             i["state"] = "done"
             close_finished(d, keep=n)
         else:
             i["state"] = "doing"
+            i.setdefault("started", now)
             close_finished(d)
     return True
+
+
+def cmd_undo(d):
+    """Put back the last task closed or dropped. Returns a line to print, or None."""
+    t = d.get("trash") or []
+    if not t:
+        return None
+    last = t.pop()
+    item, was = last["item"], last.get("was") or "pending"
+    cur = next((i for i in d["items"] if i["id"] == item["id"]), None)
+    if cur is None:
+        item["state"] = was
+        d["items"].append(item)
+        d["items"].sort(key=lambda i: i["id"])
+        what = "restored"
+    else:
+        cur["state"] = was
+        cur.pop("done_at", None)
+        what = "reopened"
+    d["log"] = [e for e in d.get("log", []) if e.get("id") != item["id"]]
+    return "%s %d. %s" % (what, item["id"], item["text"])
+
+
+def cmd_report(d, days=1):
+    """What actually got finished, from the log every `done` already writes.
+
+    The log had 251 entries across the queues and nothing ever read it except the end-of-run
+    summary, so a plain "what did I close today" needed reading raw JSON."""
+    cut_at = time.time() - days * 86400
+    rows = [e for e in d.get("log", []) if e.get("at", 0) >= cut_at]
+    if not rows:
+        print("nothing finished in the last %dd" % days)
+        return
+    secs = sum(e.get("secs", 0) for e in rows)
+    timed = [e for e in rows if e.get("secs")]
+    head = "%d finished in the last %dd" % (len(rows), days)
+    if timed:
+        head += "  ·  %s tracked over %d task%s" % (dur(secs), len(timed), "" if len(timed) == 1 else "s")
+    print(head)
+    for e in rows:
+        stamp = time.strftime("%d %b %H:%M", time.localtime(e.get("at", 0)))
+        print("  %s  %s%s" % (stamp, cut(e.get("text", ""), 90),
+                             "  (%s)" % dur(e["secs"]) if e.get("secs") else ""))
+
+
+def dur(secs):
+    secs = int(secs)
+    if secs < 3600:
+        return "%dm" % max(1, secs // 60)
+    return "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
 
 
 def blocked_ids(d):
@@ -723,6 +803,36 @@ def cmd_board(width=None, rows=None):
         print(paint(">", cut(action, width - 12), color) + "   [ . ]")
 
 
+def cmd_session_hook(start):
+    """SessionStart / SessionEnd. Starting: hand the open queue back, because until this the board
+    only appeared after the first prompt -- resuming a console showed no backlog at all. Ending:
+    stamp the queue, so `all` can tell a live board from one whose session is gone."""
+    try:
+        hook = json.load(sys.stdin)
+    except Exception:
+        hook = {}
+    p = path_for(cwd_of(hook), (hook.get("session_id") or "")[:8] or sid())
+    if not os.path.exists(p):
+        return
+    d = load(p)
+    items = open_items(d)
+    if not start:
+        if items:
+            d["ended"] = int(time.time())
+            save(p, d)
+        return
+    if not items:
+        return
+    d.pop("ended", None)
+    save(p, d)
+    print("<pending-tasks>")
+    print("This console resumes with %d task%s already open. Finish what is in progress before "
+          "taking anything new." % (len(items), "" if len(items) == 1 else "s"))
+    print(render(d))
+    print("Mark progress with: python3 %s doing|bg|done|drop <n>" % __file__)
+    print("</pending-tasks>")
+
+
 def cmd_all():
     """Every queue that still holds open tasks, newest first.
 
@@ -739,9 +849,10 @@ def cmd_all():
             rows.append((os.path.getmtime(f), f, items))
     for t, f, items in sorted(rows, reverse=True):
         days = int((time.time() - t) / 86400)
-        print("%-52s %2d open  %s%s" % (os.path.basename(f)[:-5], len(items),
-                                        "" if days < 1 else "%dd old  " % days,
-                                        cut(items[0]["text"], 60)))
+        ended = "" if not load(f).get("ended") else "ended  "
+        print("%-52s %2d open  %s%s%s" % (os.path.basename(f)[:-5], len(items),
+                                          "" if days < 1 else "%dd old  " % days, ended,
+                                          cut(items[0]["text"], 60)))
     if not rows:
         print("no queue has open tasks")
 
@@ -774,6 +885,10 @@ def main():
         return cmd_stop()
     if mode == "aisplit" and len(args) == 3:
         return cmd_aisplit(args[1], int(args[2]))
+    if mode == "session-start":
+        return cmd_session_hook(start=True)
+    if mode == "session-end":
+        return cmd_session_hook(start=False)
     p = queue_path()
     d = load(p)
     if mode == "step" and len(args) >= 3:
@@ -788,17 +903,36 @@ def main():
         d["items"].append({"id": d["next"], "text": " ".join(args[1:])[:300], "state": "pending",
                            "at": int(time.time())})
         d["next"] += 1
-    elif mode in ("doing", "done", "drop"):
-        if args[1:]:
-            n = int(args[1])
+    elif mode == "edit" and len(args) >= 3:
+        # Rewording a task used to mean drop + add, which threw away its id -- and the id is what
+        # every other console, the board and `.` refer to.
+        n = int(args[1])
+        for i in d["items"]:
+            if i["id"] == n:
+                i["text"] = " ".join(args[2:])[:300]
+                break
         else:
+            sys.exit("no item %d in %s" % (n, p))
+    elif mode == "undo":
+        line = cmd_undo(d)
+        if not line:
+            sys.exit("nothing to undo in %s" % p)
+        print(line)
+    elif mode == "report":
+        return cmd_report(d, int(args[1]) if args[1:] else 1)
+    elif mode in ("doing", "done", "drop"):
+        ids = [int(x) for x in args[1:] if x.lstrip("-").isdigit()]
+        if not ids:
             # No id: the item being worked on is the only one it can mean.
             cur = [i for i in d["items"] if i["state"] == "doing"]
             if mode == "doing" or not cur:
                 sys.exit("%s needs an item id (%s)" % (mode, p))
-            n = cur[0]["id"]
-        if not set_state(d, mode, n):
-            sys.exit("no item %d in %s" % (n, p))
+            ids = [cur[0]["id"]]
+        # Several ids at once: closing a batch one command at a time re-read and rewrote the file
+        # per id, and the `●` receipt of every task but the last was wiped by the next call.
+        for n in ids:
+            if not set_state(d, mode, n):
+                sys.exit("no item %d in %s" % (n, p))
     elif mode == "bg":
         # A task that is now waiting on something detached (a build, a long run, a remote job).
         # It stays open and owned, but it no longer occupies the console, so the queue hands the

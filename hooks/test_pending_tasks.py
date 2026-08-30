@@ -147,3 +147,30 @@ for ask, want in [
     got = got["id"] if got else None
     assert got == want, "related(%r) = %s, expected %s" % (ask, got, want)
 print("OK: follow-ups match their task, unrelated asks match nothing")
+
+# --- edit / undo / multi-id close / report ----------------------------------------------------
+submit("hhhhhhhh", "curata cache-ul npm de pe laptop")
+submit("hhhhhhhh", "trimite factura catre clientul din Cluj")
+submit("hhhhhhhh", "reporneste imprimanta din birou")
+run("hhhhhhhh", ["edit", "1", "curata cache-ul npm si pnpm"])
+assert "1. curata cache-ul npm si pnpm" in board("hhhhhhhh"), board("hhhhhhhh")
+
+run("hhhhhhhh", ["drop", "2"])
+assert "factura" not in board("hhhhhhhh")
+out = run("hhhhhhhh", ["undo"])
+assert "restored 2" in out, out
+assert "factura" in board("hhhhhhhh"), "undo must put a dropped task back:\n" + board("hhhhhhhh")
+
+run("hhhhhhhh", ["doing", "1"])
+run("hhhhhhhh", ["done", "1", "2"])
+b = board("hhhhhhhh")
+assert "cache-ul" not in b, "both ids must close in one call:\n" + b
+assert "● 2. trimite factura" in b, "the last of the batch keeps the ● receipt:\n" + b
+out = run("hhhhhhhh", ["undo"])
+assert "reopened 2" in out, out
+assert "factura" in board("hhhhhhhh")
+
+rep = run("hhhhhhhh", ["report"])
+assert "curata cache-ul npm si pnpm" in rep, "report must list what was finished:\n" + rep
+assert "factura" not in rep, "undo must take the task back out of the report:\n" + rep
+print("OK: edit keeps the id, undo restores, done takes several ids, report reads the log")
