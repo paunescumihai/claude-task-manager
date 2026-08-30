@@ -764,10 +764,11 @@ def write_offset(n):
         pass
 
 
-def cmd_scroll(arg, rows=5):
+def cmd_scroll(arg, rows=None):
     """Move the board's window. The statusline is rendered, never focused, so it cannot take a
     keypress -- scrolling it means moving a stored offset and letting the next render show the
     new window."""
+    rows = rows or board_rows()
     items = display_items(load(queue_path()))
     top = max(0, len(items) - rows)
     cur = read_offset()
@@ -812,18 +813,28 @@ def age(i):
 
 def term(name, fallback):
     """Claude Code exports COLUMNS/LINES before running the statusline; a script cannot ask the
-    terminal itself, because its output is captured, not attached to the tty."""
+    terminal itself, because its output is captured, not attached to the tty.
+
+    No floor here: a `max(20, ...)` inside this helper turned the 5-row board window into 20 rows,
+    which printed the whole queue and made scrolling a no-op. A minimum belongs to the caller that
+    has one -- a column count -- not to every value that happens to pass through."""
     try:
-        return max(20, int(os.environ.get(name) or fallback))
+        return int(os.environ.get(name) or fallback)
     except ValueError:
         return fallback
+
+
+def board_rows():
+    """One definition of the window height, so `board` and `scroll` cannot disagree about it --
+    they clamp against each other, and a mismatch silently pins the offset at 0."""
+    return max(1, term("PENDING_BOARD_ROWS", 5))
 
 
 def cmd_board(width=None, rows=None):
     """The queue itself, one task per row, under the statusline -- the user asked to see the whole
     list on screen at all times, not just a count."""
-    width = width or term("COLUMNS", 176) - 14      # room for the marker, the id and "   [ . ]"
-    rows = rows or term("PENDING_BOARD_ROWS", 5)
+    width = width or max(20, term("COLUMNS", 176) - 14)  # room for marker, id and "   [ . ]"
+    rows = rows or board_rows()
     color = not os.environ.get("NO_COLOR")
     items = display_items(load(queue_path()))
     if not items:
