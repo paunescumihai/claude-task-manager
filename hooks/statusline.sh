@@ -118,7 +118,9 @@ except Exception: print('')
 # The count rides on the main line; the list itself gets its own rows underneath, so the whole
 # backlog is on screen permanently instead of living in the conversation.
 # The session id matters too: queues under ~ are per session, since ~ is a catch-all, not a project.
-qenv=(CLAUDE_PROJECT_DIR="${json_proj:-$PWD}" CLAUDE_CODE_SESSION_ID="${json_sid:-$CLAUDE_CODE_SESSION_ID}")
+# COLUMNS is what Claude Code exports for terminal width -- passed on explicitly so the board
+# wraps to the real window instead of a hardcoded 176 columns.
+qenv=(CLAUDE_PROJECT_DIR="${json_proj:-$PWD}" CLAUDE_CODE_SESSION_ID="${json_sid:-$CLAUDE_CODE_SESSION_ID}" COLUMNS="${COLUMNS:-176}")
 todo=$(env "${qenv[@]}" python3 "$CLAUDE_DIR/hooks/pending_tasks.py" line 2>/dev/null)
 board=$(env "${qenv[@]}" python3 "$CLAUDE_DIR/hooks/pending_tasks.py" board 2>/dev/null)
 [ -n "$todo" ] && todo="${YEL}${todo}${R}"

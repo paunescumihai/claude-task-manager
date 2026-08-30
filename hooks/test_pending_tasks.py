@@ -15,7 +15,7 @@ os.makedirs(os.path.join(HOMEDIR, ".claude", "pending"), exist_ok=True)
 
 
 def run(session, argv, stdin=""):
-    env = dict(os.environ, HOME=HOMEDIR, CLAUDE_CODE_SESSION_ID=session)
+    env = dict(os.environ, HOME=HOMEDIR, CLAUDE_CODE_SESSION_ID=session, NO_COLOR="1")
     env.pop("CLAUDE_PROJECT_DIR", None)
     env.pop("CLAUDE_CONFIG_DIR", None)
     return subprocess.run([sys.executable, HOOK] + argv, input=stdin,

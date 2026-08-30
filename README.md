@@ -17,8 +17,14 @@ screen permanently, in the statusline, instead of buried in the transcript.
 - **Splits multi-ask messages.** `1: … 2: …` or a bulleted list becomes one task per ask, so a
   three-ask message cannot be half-answered and forgotten. Prose that runs several asks together is
   caught by a background pass through a small model (marked `⊙` — worth a glance).
+- **Folds a follow-up into the task it belongs to.** An ask that is really about work already on
+  the board is appended to that task (the row shows `(+N)`) instead of opening a second half-task
+  for one piece of work. Matching is on shared word stems, so inflection does not hide it.
 - **Shows the whole board.** The statusline carries the count plus one row per open task, and a
-  `>` row marks what to do next; typing a bare `.` accepts it.
+  `>` row marks what to do next; typing a bare `.` accepts it. Rows are coloured by state — next
+  yellow, in progress cyan, parked dim, just-finished green — carry a dim age once a task is over
+  an hour old, and wrap to the real terminal width (`$COLUMNS`; `NO_COLOR` turns colour off,
+  `$PENDING_BOARD_ROWS` sets how many rows the board takes).
 - **Backgrounded work stops blocking.** `bg <n>` says a task is now waiting on something detached
   (a build, a long remote job): it stays open but drops out of the suggestion, so the console picks
   up the next task that does not need its result. `--blocks <ids>` holds back the ones that do.
@@ -62,6 +68,8 @@ python3 ~/.claude/hooks/pending_tasks.py done 3        # finish it
 python3 ~/.claude/hooks/pending_tasks.py drop 3        # abandon it
 python3 ~/.claude/hooks/pending_tasks.py add "text"    # queue by hand
 python3 ~/.claude/hooks/pending_tasks.py step 3 "the concrete next action"
+python3 ~/.claude/hooks/pending_tasks.py all           # every queue that still has open tasks
+python3 ~/.claude/hooks/pending_tasks.py prune         # drop cold empty queues and dead pointers
 python3 ~/.claude/hooks/tasks_tui.py                   # interactive board
 ```
 

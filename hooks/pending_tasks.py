@@ -20,11 +20,19 @@ Modes:
                     rendered and never focused, so it cannot take a keypress -- the offset is
                     stored next to the queue and the next render shows the new window.
     list            the queue, numbered, for a human or the assistant to read
+    all             every queue that still holds open tasks -- a session ends and its board stays
+                    behind, and nothing else shows which ones are still unfinished
+    prune           drop cold empty queues and the per-session pointers left behind by ended
+                    sessions (also runs on every `submit`)
     add TEXT        queue an item by hand
                     A new ask that is really about a task already on the board is folded INTO that
                     task instead of opening a second row for one piece of work; the row then shows
                     `(+N)`. Match is on shared content words, so it needs the ask to name the same
                     subject, not merely be on a similar topic.
+                    The board colours itself by state (next = yellow, in progress = cyan, parked
+                    or waiting = dim, just finished = green) and stamps a dim age on anything left
+                    sitting for over an hour. It wraps to $COLUMNS -- Claude Code exports the real
+                    terminal width -- and $PENDING_BOARD_ROWS rows (5). NO_COLOR turns colour off.
     Board markers: >  the one to do next (accepts a bare `.`)   ▶  in progress
                    ○  pending, not started   ⊙  pending, added by the prompt splitter
                    ⏳ running in the background, not holding the console
@@ -343,6 +351,23 @@ def spawn_aisplit(p, item_id, text):
         pass
 
 
+def independent(parts):
+    """True when these really are separate tasks, not one ask chopped in half.
+
+    "fa un research" + "vezi cum poti imbunatati scriptul" came back as two tasks from the splitter
+    and put a fake backlog on the board: the first half names no subject at all. So every part must
+    carry two content words of its own, and no two parts may be about the same thing."""
+    keys = [keywords(x) for x in parts]
+    if any(len(k) < 2 for k in keys):
+        return False
+    for a in range(len(keys)):
+        for b in range(a + 1, len(keys)):
+            shared = sum(1 for x in keys[a] if any(same_word(x, y) for y in keys[b]))
+            if shared >= REL_WORDS and shared / min(len(keys[a]), len(keys[b])) >= REL_MIN:
+                return False
+    return True
+
+
 def cmd_aisplit(p, item_id):
     import subprocess
     d = load(p)
@@ -361,7 +386,7 @@ def cmd_aisplit(p, item_id):
         return
     parts = [" ".join(x.split()) for x in out.splitlines()]
     parts = [x.lstrip("-*0123456789.) ").strip() for x in parts if len(x.split()) >= MIN_WORDS]
-    if len(parts) < 2 or len(parts) > 9:
+    if len(parts) < 2 or len(parts) > 9 or not independent(parts):
         return
     # Re-read: the queue may have moved on while the model was thinking.
     d = load(p)
@@ -447,9 +472,11 @@ def prune(keep=()):
         except OSError:
             pass
     for f in glob.glob(LAST + "-*"):
+        # One pointer per session, forever: 191 of them had piled up next to 180 queues. A cold
+        # pointer is a session that ended, whether or not its queue file is still there.
         try:
             t = open(f).read().strip()
-            if t not in keep and not os.path.exists(t):
+            if t not in keep and (not os.path.exists(t) or now - os.path.getmtime(f) > PRUNE_AGE):
                 os.remove(f)
         except OSError:
             pass
@@ -623,9 +650,47 @@ def cmd_scroll(arg, rows=5):
     cmd_board()
 
 
-def cmd_board(width=176, rows=5):
+# The board is the only part that is drawn rather than read, so it is the only part that colours.
+# `render` stays plain: it goes into the assistant's context, where escape codes are noise.
+ANSI = {"dim": "\033[2m", "bold": "\033[1m", "grn": "\033[32m", "yel": "\033[33m",
+        "cyn": "\033[36m", "off": "\033[0m"}
+# A row's colour is its state, so the eye finds "what is running" without reading a word:
+# yellow = do this next, cyan = in progress, dim = parked or waiting, green = just finished.
+ROW = {">": "yel", "▶": "cyn", "⏳": "dim", "●": "grn", "⊙": "dim"}
+
+
+def paint(mark, body, color=True):
+    if not color:
+        return mark + " " + body
+    pre = ANSI.get(ROW.get(mark, ""), "") + (ANSI["bold"] if mark in (">", "▶") else "")
+    return "%s%s %s%s" % (pre, mark, body, ANSI["off"]) if pre else "%s %s" % (mark, body)
+
+
+def age(i):
+    """A dim "3h" on anything left sitting: a task queued this morning and one queued a minute ago
+    look identical otherwise, and the old one is usually the one being forgotten."""
+    t = int(time.time()) - int(i.get("at") or 0)
+    if not i.get("at") or t < 3600 or i["state"] == "done":
+        return ""
+    return " %s%dh%s" % (ANSI["dim"], t // 3600, ANSI["off"]) if t < 86400 else \
+           " %s%dd%s" % (ANSI["dim"], t // 86400, ANSI["off"])
+
+
+def term(name, fallback):
+    """Claude Code exports COLUMNS/LINES before running the statusline; a script cannot ask the
+    terminal itself, because its output is captured, not attached to the tty."""
+    try:
+        return max(20, int(os.environ.get(name) or fallback))
+    except ValueError:
+        return fallback
+
+
+def cmd_board(width=None, rows=None):
     """The queue itself, one task per row, under the statusline -- the user asked to see the whole
     list on screen at all times, not just a count."""
+    width = width or term("COLUMNS", 176) - 14      # room for the marker, the id and "   [ . ]"
+    rows = rows or term("PENDING_BOARD_ROWS", 5)
+    color = not os.environ.get("NO_COLOR")
     items = display_items(load(queue_path()))
     if not items:
         return
@@ -639,21 +704,46 @@ def cmd_board(width=176, rows=5):
     # same text twice, once plain and once with "> ", made the board look like two open tasks.
     same = it is not None and action == it["text"]
     if off:
-        print("   ↑%d more" % off)
+        print("   %s↑%d more%s" % (ANSI["dim"] if color else "", off, ANSI["off"] if color else ""))
     for i in items[off:off + rows]:
         if it is not None and i["id"] == it["id"] and same:
             mark = ">"
         else:
             mark = {"doing": "▶", "bg": "⏳", "done": "●"}.get(
                 i["state"], "⊙" if i.get("auto") else "○")
-        row = "%s %d. %s" % (mark, i["id"], cut(label(i), width))
+        body = "%d. %s%s" % (i["id"], cut(label(i), width), age(i) if color else "")
+        row = paint(mark, body, color)
         print(row + "   [ . ]" if mark == ">" else row)
     if len(items) > off + rows:
-        print("   ↓%d more   [ !q down ]" % (len(items) - off - rows))
+        print("   %s↓%d more   [ !q down ]%s" % (ANSI["dim"] if color else "",
+              len(items) - off - rows, ANSI["off"] if color else ""))
     # A recorded `step` is a different sentence from the task title -- that one is worth its own
     # line, because it says what to actually do next rather than restating the task.
     if it is not None and not same:
-        print("> %s   [ . ]" % cut(action, width - 12))
+        print(paint(">", cut(action, width - 12), color) + "   [ . ]")
+
+
+def cmd_all():
+    """Every queue that still holds open tasks, newest first.
+
+    A session ends and its queue stays behind with unfinished items in it; 180 queue files had piled
+    up before this existed, and nothing showed which ones still mattered. Read-only on purpose --
+    the rule is one console works one project's board, this only says where the others are."""
+    rows = []
+    for f in glob.glob(os.path.join(DIR, "*.json")):
+        try:
+            items = open_items(load(f))
+        except Exception:
+            continue
+        if items:
+            rows.append((os.path.getmtime(f), f, items))
+    for t, f, items in sorted(rows, reverse=True):
+        days = int((time.time() - t) / 86400)
+        print("%-52s %2d open  %s%s" % (os.path.basename(f)[:-5], len(items),
+                                        "" if days < 1 else "%dd old  " % days,
+                                        cut(items[0]["text"], 60)))
+    if not rows:
+        print("no queue has open tasks")
 
 
 def main():
@@ -675,6 +765,11 @@ def main():
         return cmd_scroll("-" + (args[1] if args[1:] else "1"))
     if mode == "next":
         return cmd_next()
+    if mode == "prune":
+        prune(keep=(queue_path(),))
+        return
+    if mode == "all":
+        return cmd_all()
     if mode == "stop":
         return cmd_stop()
     if mode == "aisplit" and len(args) == 3:
