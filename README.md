@@ -54,6 +54,7 @@ Python 3.8+ and Bash. No third-party packages, no service, no daemon.
 | **Gives you an interactive board** | `tasks_tui.py` opens the queue in a curses TUI: arrows or mouse to move, `Enter` for the row menu, then start / background / finish / drop. |
 | **Picks up where the console left off** | `SessionStart` hands the open queue back when a console opens or resumes; `SessionEnd` stamps the queue; `all` flags boards whose session is gone but whose tasks are not. |
 | **Undo, edit, and a record of what got done** | `undo` puts back the last task closed or dropped (5 deep), `edit N` rewords a task without losing its id, and `report` prints what actually finished, with the time tracked between `doing` and `done`. |
+| **Keeps the answer, not just the ask** | When a task closes, the assistant's closing message for that turn is filed against it, so `report` says what was built and what is still left. The last day of finished tasks and their notes is handed to the next console at `SessionStart`. |
 | **One queue per project** | Per session under `$HOME`, which is a catch-all rather than a project. Nothing is ever copied between queues, so one console's board never shows another's work. |
 
 ### Board markers
@@ -101,7 +102,8 @@ python3 ~/.claude/hooks/pending_tasks.py done 3 4 5     # close several at once
 python3 ~/.claude/hooks/pending_tasks.py drop 3         # abandon it
 python3 ~/.claude/hooks/pending_tasks.py edit 3 "text"  # reword item 3, same id
 python3 ~/.claude/hooks/pending_tasks.py undo           # put back the last closed or dropped task
-python3 ~/.claude/hooks/pending_tasks.py report 7       # what got finished in the last 7 days
+python3 ~/.claude/hooks/pending_tasks.py report 7       # what got finished in the last 7 days, and what was said
+python3 ~/.claude/hooks/pending_tasks.py note 3 "text"  # correct the closing note kept for task 3
 python3 ~/.claude/hooks/pending_tasks.py down 1         # scroll, when there are more tasks than rows
 python3 ~/.claude/hooks/pending_tasks.py all            # every queue that still has open tasks
 python3 ~/.claude/hooks/pending_tasks.py prune          # drop cold empty queues and dead pointers
@@ -116,7 +118,7 @@ board offers for `.`.
 | hook | what it does |
 |---|---|
 | `UserPromptSubmit` | queues the prompt (splitting or merging it), prints the open queue back as context |
-| `Stop` | continues the queue at the end of a turn and summarises what moved |
+| `Stop` | continues the queue at the end of a turn, and files this turn's closing message against whatever it closed |
 | `SessionStart` | hands the open queue to a console that just opened, resumed or compacted |
 | `SessionEnd` | stamps the queue so `all` can flag a board nobody is watching |
 | `statusLine` | renders the session line plus the board underneath it |
@@ -149,6 +151,7 @@ a command never hunts for an id across files. Cold queues with nothing open are 
 | `hooks/test_pending_next.py` | the `step` / `next` / `.` accept path |
 | `hooks/test_tasks_tui.py` | TUI rendering and key handling |
 | `docs/make-screenshots.py` | regenerates the screenshots above from a mock queue |
+| `hooks/ctm-autopush.sh` | development only: mirrors the live hooks back into this checkout, tests, scans for secrets and pushes. `install.sh` does not wire it |
 | `install.sh` | copies the files and wires `settings.json` |
 
 ## Tests

@@ -77,6 +77,7 @@ import json
 import os
 import re
 import sys
+import textwrap
 import time
 import unicodedata
 
@@ -290,7 +291,9 @@ def close_finished(d, keep=None):
     d["items"] = [i for i in d["items"] if i["state"] != "done" or i["id"] == keep]
 
 
-TRASH = 5      # how many closed/dropped items `undo` can walk back through
+TRASH = 5
+HISTORY = 200      # finished tasks kept with their closing note
+NOTE = 600         # how much of the closing message is worth keeping      # how many closed/dropped items `undo` can walk back through
 
 
 def push_trash(d, item, was):
@@ -328,6 +331,10 @@ def set_state(d, mode, n):
             if i.get("started"):
                 entry["secs"] = now - int(i["started"])
             d.setdefault("log", []).append(entry)
+            # `log` is the run-summary buffer and gets cleared when the queue empties; `history`
+            # is what "what did I already do here" reads, so it survives.
+            d.setdefault("history", []).append(entry)
+            del d["history"][:-HISTORY]
             i["state"] = "done"
             close_finished(d, keep=n)
         else:
@@ -355,6 +362,7 @@ def cmd_undo(d):
         cur.pop("done_at", None)
         what = "reopened"
     d["log"] = [e for e in d.get("log", []) if e.get("id") != item["id"]]
+    d["history"] = [e for e in d.get("history", []) if e.get("id") != item["id"]]
     return "%s %d. %s" % (what, item["id"], item["text"])
 
 
@@ -364,7 +372,7 @@ def cmd_report(d, days=1):
     The log had 251 entries across the queues and nothing ever read it except the end-of-run
     summary, so a plain "what did I close today" needed reading raw JSON."""
     cut_at = time.time() - days * 86400
-    rows = [e for e in d.get("log", []) if e.get("at", 0) >= cut_at]
+    rows = [e for e in (d.get("history") or d.get("log") or []) if e.get("at", 0) >= cut_at]
     if not rows:
         print("nothing finished in the last %dd" % days)
         return
@@ -378,6 +386,8 @@ def cmd_report(d, days=1):
         stamp = time.strftime("%d %b %H:%M", time.localtime(e.get("at", 0)))
         print("  %s  %s%s" % (stamp, cut(e.get("text", ""), 90),
                              "  (%s)" % dur(e["secs"]) if e.get("secs") else ""))
+        for line in textwrap.wrap(e.get("note", ""), 86)[:6]:
+            print("        %s" % line)
 
 
 def dur(secs):
@@ -489,6 +499,48 @@ def sig(d):
     return "%s|%d" % (",".join(str(i["id"]) for i in open_items(d)), len(d.get("log", [])))
 
 
+def last_said(hook):
+    """The assistant's closing words for this turn, from the transcript the Stop hook points at.
+
+    That text is the only place that says what was actually done and what is left -- the queue
+    otherwise keeps the ask and nothing about the answer."""
+    path = hook.get("transcript_path") or ""
+    if not path or not os.path.isfile(path):
+        return ""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            tail = fh.readlines()[-400:]
+    except OSError:
+        return ""
+    for raw in reversed(tail):
+        try:
+            rec = json.loads(raw)
+        except Exception:
+            continue
+        msg = rec.get("message") or {}
+        if rec.get("type") != "assistant" or msg.get("role") != "assistant":
+            continue
+        body = msg.get("content")
+        if isinstance(body, str):
+            text = body
+        else:
+            text = " ".join(b.get("text", "") for b in (body or []) if b.get("type") == "text")
+        text = re.sub(r"\s+", " ", text).strip()
+        if text:
+            return text[:NOTE]
+    return ""
+
+
+def stamp_notes(d, note):
+    """Attach this turn's closing message to whatever it closed. Entries are shared with `log`."""
+    if not note:
+        return
+    for e in reversed(d.get("history") or []):
+        if e.get("note"):
+            break
+        e["note"] = note
+
+
 def cmd_stop():
     try:
         hook = json.load(sys.stdin)
@@ -497,6 +549,7 @@ def cmd_stop():
     session = (hook.get("session_id") or "")[:8] or sid()
     p = path_for(cwd_of(hook), session)
     d = load(p)
+    stamp_notes(d, last_said(hook))
     items = open_items(d)
     if items:
         # Silenced per user request: never block/nag on stop. Keep bookkeeping (guard + summary
@@ -505,6 +558,7 @@ def cmd_stop():
         d["summary"] = True
         save(p, d)
         return
+    save(p, d)
     if d.get("summary"):
         done = d.get("log", [])
         d["summary"] = False
@@ -821,15 +875,25 @@ def cmd_session_hook(start):
             d["ended"] = int(time.time())
             save(p, d)
         return
-    if not items:
+    recent = [e for e in (d.get("history") or []) if e.get("at", 0) > time.time() - 86400][-3:]
+    if not items and not recent:
         return
     d.pop("ended", None)
     save(p, d)
     print("<pending-tasks>")
-    print("This console resumes with %d task%s already open. Finish what is in progress before "
-          "taking anything new." % (len(items), "" if len(items) == 1 else "s"))
-    print(render(d))
-    print("Mark progress with: python3 %s doing|bg|done|drop <n>" % __file__)
+    if recent:
+        # The queue used to keep the ask and forget the answer, so a new console had no idea what
+        # the last one had already built.
+        print("Finished here in the last day, with what was said on closing:")
+        for e in recent:
+            print("  %s. %s" % (e["id"], cut(e.get("text", ""), 90)))
+            if e.get("note"):
+                print("     %s" % cut(e["note"], 400))
+    if items:
+        print("This console resumes with %d task%s already open. Finish what is in progress before "
+              "taking anything new." % (len(items), "" if len(items) == 1 else "s"))
+        print(render(d))
+        print("Mark progress with: python3 %s doing|bg|done|drop <n>" % __file__)
     print("</pending-tasks>")
 
 
@@ -913,6 +977,14 @@ def main():
                 break
         else:
             sys.exit("no item %d in %s" % (n, p))
+    elif mode == "note" and len(args) >= 3:
+        n = int(args[1])
+        for e in reversed(d.get("history") or []):
+            if e["id"] == n:
+                e["note"] = " ".join(args[2:])[:NOTE]
+                break
+        else:
+            sys.exit("task %d is not in the finished history of %s" % (n, p))
     elif mode == "undo":
         line = cmd_undo(d)
         if not line:

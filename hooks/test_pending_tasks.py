@@ -174,3 +174,27 @@ rep = run("hhhhhhhh", ["report"])
 assert "curata cache-ul npm si pnpm" in rep, "report must list what was finished:\n" + rep
 assert "factura" not in rep, "undo must take the task back out of the report:\n" + rep
 print("OK: edit keeps the id, undo restores, done takes several ids, report reads the log")
+
+# --- what Claude said when the task closed is kept with the task ------------------------------
+submit("iiiiiiii", "muta serverul de mail pe portul 587")
+run("iiiiiiii", ["doing", "1"])
+run("iiiiiiii", ["done", "1"])
+transcript = os.path.join(HOMEDIR, "transcript.jsonl")
+with open(transcript, "w") as fh:
+    fh.write(json.dumps({"type": "user", "message": {"role": "user", "content": "go"}}) + "\n")
+    fh.write(json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
+        {"type": "text", "text": "Port changed to 587 and TLS forced.\nStill to do: rotate the "
+                                 "relay password."}]}}) + "\n")
+run("iiiiiiii", ["stop"], json.dumps({"session_id": "iiiiiiii", "cwd": HOMEDIR,
+                                      "transcript_path": transcript}))
+rep = run("iiiiiiii", ["report"])
+assert "rotate the relay password" in rep, "the closing message must be kept with the task:\n" + rep
+
+# a note can be corrected by hand, and a task closed later does not inherit the old note
+submit("iiiiiiii", "reinstaleaza certificatul wildcard")
+run("iiiiiiii", ["done", "2"])
+run("iiiiiiii", ["note", "2", "renewed until March, DNS-01 via the API token"])
+rep = run("iiiiiiii", ["report"])
+assert "renewed until March" in rep, rep
+assert rep.count("rotate the relay password") == 1, "the note leaked onto another task:\n" + rep
+print("OK: the closing message is recorded against the task it closed")
