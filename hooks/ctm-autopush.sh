@@ -33,6 +33,10 @@ leak=$(git grep -InIE '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}' -- . \
 if [ -n "$leak" ]; then
   echo "claude-task-manager: e-mail address in tracked text, not pushed:"; echo "$leak"; exit 0
 fi
+home=$(git grep -Il -F "$HOME" -- . | head -3)
+if [ -n "$home" ]; then
+  echo "claude-task-manager: local path in tracked file, not pushed:"; echo "$home"; exit 0
+fi
 if command -v gitleaks >/dev/null && ! gitleaks detect --no-git --no-banner --redact >/dev/null 2>&1; then
   echo "claude-task-manager: gitleaks found a secret, not pushed"; exit 0
 fi
