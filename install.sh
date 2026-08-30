@@ -21,7 +21,10 @@ settings, claude_dir = os.environ["SETTINGS"], os.environ["CLAUDE_DIR"]
 hook = "python3 \"%s/hooks/pending_tasks.py\"" % claude_dir
 d = json.load(open(settings))
 
-d.setdefault("statusLine", {"type": "command", "command": "bash %s/hooks/statusline.sh" % claude_dir})
+# refreshInterval: the statusline otherwise only re-renders on an assistant message, so a task
+# closed in the TUI or in another console would sit stale on the board until the next reply.
+d.setdefault("statusLine", {"type": "command", "command": "bash %s/hooks/statusline.sh" % claude_dir,
+                            "refreshInterval": 10})
 
 hooks = d.setdefault("hooks", {})
 for event, mode in (("UserPromptSubmit", "submit"), ("Stop", "stop")):
