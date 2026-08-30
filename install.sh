@@ -35,6 +35,6 @@ json.dump(d, open(settings, "w"), indent=2)
 print("wired into", settings)
 PY
 
-python3 "$CLAUDE_DIR/hooks/test_pending_tasks.py"
+NO_COLOR=1 python3 "$CLAUDE_DIR/hooks/test_pending_tasks.py"
 python3 "$CLAUDE_DIR/hooks/test_tasks_tui.py"
 echo "Done. Restart Claude Code to pick up the hooks."
