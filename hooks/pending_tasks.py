@@ -15,8 +15,16 @@ Modes:
                     obeyed here -- obeying it is the assistant's job, remembering it is this file's.
     line            one short line for the statusline (empty when the queue is empty)
     board           the whole open queue, one item per line, for the statusline's extra rows
+    scroll N        move the board's 5-row window: +N / -N to step, a bare number to jump, or
+                    top / end. `down [N]` and `up [N]` are the short forms. The statusline is
+                    rendered and never focused, so it cannot take a keypress -- the offset is
+                    stored next to the queue and the next render shows the new window.
     list            the queue, numbered, for a human or the assistant to read
     add TEXT        queue an item by hand
+                    A new ask that is really about a task already on the board is folded INTO that
+                    task instead of opening a second row for one piece of work; the row then shows
+                    `(+N)`. Match is on shared content words, so it needs the ask to name the same
+                    subject, not merely be on a similar topic.
     Board markers: >  the one to do next (accepts a bare `.`)   ▶  in progress
                    ○  pending, not started   ⊙  pending, added by the prompt splitter
                    ⏳ running in the background, not holding the console
@@ -54,6 +62,7 @@ import os
 import re
 import sys
 import time
+import unicodedata
 
 HOME = os.path.expanduser("~")
 DIR = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR", os.path.join(HOME, ".claude")), "pending")
@@ -98,6 +107,50 @@ def split_tasks(prompt):
     if len(lines) >= 2:
         return lines
     return [one]
+
+
+# A new ask that is really about a task already on the board must not open a second row: the user
+# ends up with two half-tasks for one piece of work. Relatedness is measured on content words only
+# -- shared stopwords ("cum", "the", "fac") say nothing about the subject.
+STOP = set("""a ai al ale am ar are as asa au ca care cat ce cu de din do does doar dupa e ei el
+ea este esti eu fac face faci fara fi fie fost hai iar il imi in intr into is it la le li lui mai
+mi mie ne ni nu o pe pentru poate prin sa sau se si sunt sa ta te ti tot tu un una une unde va vor
+vrei a an and any are as at be but by can could did do for from get got has have how i if in is it
+its just make me my no not of on or our so than that the their them then there these they this to
+was we what when where which who why will with would you your task tasks
+about again also another ask asks first second other please still now thing things question
+intrebare intrebarea ceva lucru lucrul chestie chestia asta asa acolo aici""".split())
+# Two thresholds, because a three-word follow-up and a thirty-word task can never share much of the
+# longer one: score on the SHORTER side, and demand three real shared words. Fewer, and two asks
+# glue together on one common noun.
+# ponytail: bag-of-words overlap, no stemming -- "build" and "build-ul" count as different words.
+# Real follow-ups repeat the proper nouns (subpiata, GitHub Actions, the file name), which is what
+# carries the match. Move to embeddings only if misses show up in practice.
+REL_MIN = 0.6
+REL_WORDS = 3
+
+
+def keywords(t):
+    t = unicodedata.normalize("NFKD", t.lower())
+    t = "".join(c for c in t if not unicodedata.combining(c))
+    return {w for w in re.findall(r"[a-z0-9_./-]{3,}", t) if w not in STOP}
+
+
+def related(d, text):
+    """The open item this ask belongs to, or None -- highest overlap wins, newest breaks a tie."""
+    k = keywords(text)
+    if len(k) < REL_WORDS:
+        return None
+    best, score = None, 0.0
+    for i in open_items(d):
+        o = keywords(" ".join([i["text"]] + (i.get("more") or [])))
+        shared = k & o
+        if len(shared) < REL_WORDS:
+            continue
+        s = len(shared) / min(len(k), len(o))
+        if s >= REL_MIN and s >= score:
+            best, score = i, s
+    return best
 
 
 def sid():
@@ -332,12 +385,18 @@ def cmd_stop():
         # Silenced per user request: no stop-hook block here either.
 
 
+def label(i):
+    """Row text, with a +N when later asks were folded into this task."""
+    n = len(i.get("more") or [])
+    return i["text"] + (" (+%d)" % n if n else "")
+
+
 def render(d):
     out = []
     for i in display_items(d):
         mark = {"doing": "▶ ", "bg": "⏳ ", "done": "● "}.get(
             i["state"], "⊙ " if i.get("auto") else "○ ")
-        out.append("%s%d. %s" % (mark, i["id"], i["text"]))
+        out.append("%s%d. %s" % (mark, i["id"], label(i)))
     return "\n".join(out)
 
 
@@ -400,19 +459,26 @@ def cmd_submit():
             print("`.` was typed but the queue is empty -- ask what to do next.")
         print("</pending-tasks>")
         return
-    queued = []
+    queued, merged = [], []
     if prompt and not SKIP.match(prompt):
         for text in split_tasks(prompt):
             text = text[:300]
             if any(i["text"] == text for i in open_items(d)):
                 continue
+            into = related(d, text)
+            if into is not None:
+                into.setdefault("more", []).append(text)
+                merged.append((into, text))
+                continue
             queued.append({"id": d["next"], "text": text, "state": "pending",
                            "at": int(time.time())})
             d["items"].append(queued[-1])
             d["next"] += 1
-        if queued:
+        if queued or merged:
             save(p, d)
-            if len(queued) == 1:
+            # Only a genuinely new task gets the second-opinion splitter: re-splitting an ask that
+            # was folded into an existing task would undo the merge.
+            if len(queued) == 1 and not merged:
                 spawn_aisplit(p, queued[0]["id"], queued[0]["text"])
     prune(keep=(p,))
     items = open_items(d)
@@ -425,6 +491,11 @@ def cmd_submit():
               % (len(queued), ", ".join(str(q["id"]) for q in queued)))
     elif queued:
         print("Queued as task %d. Finish the task in progress first -- do not abandon it." % queued[0]["id"])
+    for into, text in merged:
+        print("That ask is part of task %d (%s), not a new one -- it was folded in there: %s"
+              % (into["id"], into["text"], text))
+    if merged and not queued:
+        print("Nothing new was queued. Handle it inside that task.")
     if prompt and PREEMPT.search(prompt):
         print("The user explicitly said to drop everything: switch to the newest task NOW, and keep "
               "the rest of this queue.")
@@ -486,26 +557,74 @@ def cmd_line():
     print("todo:%d %s" % (len(items), cut((doing or items)[0]["text"], 76)))
 
 
+def offset_path():
+    """The board's scroll position lives beside the queue, not inside it: every other command
+    rewrites the queue file, and a view offset has no business racing real task state."""
+    return queue_path() + ".offset"
+
+
+def read_offset():
+    try:
+        return int(open(offset_path()).read().strip())
+    except Exception:
+        return 0
+
+
+def write_offset(n):
+    try:
+        with open(offset_path(), "w") as f:
+            f.write(str(n))
+    except Exception:
+        pass
+
+
+def cmd_scroll(arg, rows=5):
+    """Move the board's window. The statusline is rendered, never focused, so it cannot take a
+    keypress -- scrolling it means moving a stored offset and letting the next render show the
+    new window."""
+    items = display_items(load(queue_path()))
+    top = max(0, len(items) - rows)
+    cur = read_offset()
+    a = (arg or "").strip()
+    if a in ("top", "home"):
+        off = 0
+    elif a in ("end", "bottom"):
+        off = top
+    elif a.startswith(("+", "-")):
+        off = cur + int(a)
+    else:
+        off = int(a)
+    write_offset(max(0, min(off, top)))
+    cmd_board()
+
+
 def cmd_board(width=176, rows=5):
     """The queue itself, one task per row, under the statusline -- the user asked to see the whole
     list on screen at all times, not just a count."""
     items = display_items(load(queue_path()))
     if not items:
         return
+    # Clamp on render, not on write: tasks finish between renders, and a stale offset left over
+    # from a longer queue would otherwise scroll the board off into nothing.
+    off = max(0, min(read_offset(), max(0, len(items) - rows)))
+    if off != read_offset():
+        write_offset(off)
     it, action = next_step()
     # The suggestion marks the row it belongs to instead of being repeated underneath: printing the
     # same text twice, once plain and once with "> ", made the board look like two open tasks.
     same = it is not None and action == it["text"]
-    for i in items[:rows]:
+    if off:
+        print("   ↑%d more" % off)
+    for i in items[off:off + rows]:
         if it is not None and i["id"] == it["id"] and same:
             mark = ">"
         else:
             mark = {"doing": "▶", "bg": "⏳", "done": "●"}.get(
                 i["state"], "⊙" if i.get("auto") else "○")
-        row = "%s %d. %s" % (mark, i["id"], cut(i["text"], width))
+        row = "%s %d. %s" % (mark, i["id"], cut(label(i), width))
         print(row + "   [ . ]" if mark == ">" else row)
-    if len(items) > rows:
-        print("   +%d more" % (len(items) - rows))
+    if len(items) > off + rows:
+        print("   ↓%d more   [ !q down ]" % (len(items) - off - rows))
     # A recorded `step` is a different sentence from the task title -- that one is worth its own
     # line, because it says what to actually do next rather than restating the task.
     if it is not None and not same:
@@ -523,6 +642,12 @@ def main():
         return cmd_line()
     if mode == "board":
         return cmd_board()
+    if mode == "scroll":
+        return cmd_scroll(args[1] if args[1:] else "+1")
+    if mode == "down":
+        return cmd_scroll("+" + (args[1] if args[1:] else "1"))
+    if mode == "up":
+        return cmd_scroll("-" + (args[1] if args[1:] else "1"))
     if mode == "next":
         return cmd_next()
     if mode == "stop":

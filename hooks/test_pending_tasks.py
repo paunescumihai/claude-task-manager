@@ -109,3 +109,15 @@ assert "primul" not in b, "the ● must go once the next task starts:\n" + b
 run("ffffffff", ["done", "2"])
 assert "● 2. al doilea" in board("ffffffff") and "primul" not in board("ffffffff")
 print("OK: ● marks the task just closed, cleared when work moves on")
+
+# --- a follow-up about a task already queued is folded into it, not queued twice --------------
+submit("gggggggg", "repara build-ul iOS pentru subpiata pe GitHub Actions")
+out = submit("gggggggg", "de ce cade build-ul iOS subpiata pe GitHub Actions?")
+assert "part of task 1" in out, "the follow-up must merge into task 1:\n" + out
+b = board("gggggggg")
+assert "(+1)" in b, "the merged ask must show as +1 on the board:\n" + b
+assert "2." not in b, "no second task may be opened for the same work:\n" + b
+out = submit("gggggggg", "adauga o pagina de contact pe site-ul teolia")
+assert "part of task" not in out, "an unrelated ask must stay its own task:\n" + out
+assert "○ 2. adauga o pagina de contact" in board("gggggggg"), board("gggggggg")
+print("OK: related ask merged, unrelated ask queued separately")
