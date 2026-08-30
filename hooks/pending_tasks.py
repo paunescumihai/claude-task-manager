@@ -117,23 +117,45 @@ ea este esti eu fac face faci fara fi fie fost hai iar il imi in intr into is it
 mi mie ne ni nu o pe pentru poate prin sa sau se si sunt sa ta te ti tot tu un una une unde va vor
 vrei a an and any are as at be but by can could did do for from get got has have how i if in is it
 its just make me my no not of on or our so than that the their them then there these they this to
-was we what when where which who why will with would you your task tasks
-about again also another ask asks first second other please still now thing things question
-intrebare intrebarea ceva lucru lucrul chestie chestia asta asa acolo aici""".split())
+was we what when where which who why will with would you your
+about again also another ask asks first second other please still now thing things
+ceva lucru lucrul chestie chestia asta asa acolo aici cum cand unde cine sunt sint mine""".split())
 # Two thresholds, because a three-word follow-up and a thirty-word task can never share much of the
-# longer one: score on the SHORTER side, and demand three real shared words. Fewer, and two asks
-# glue together on one common noun.
+# longer one: score on the SHORTER side. Two shared words are enough only when they are most of the
+# shorter ask ("de ce nu merge deploy-ul la teolia" carries exactly two); anything looser lets one
+# common noun glue unrelated asks together.
 # ponytail: bag-of-words overlap, no stemming -- "build" and "build-ul" count as different words.
 # Real follow-ups repeat the proper nouns (subpiata, GitHub Actions, the file name), which is what
 # carries the match. Move to embeddings only if misses show up in practice.
 REL_MIN = 0.6
-REL_WORDS = 3
+REL_WORDS = 2
+REL_STRONG = 0.66   # score a 2-word match must clear
 
 
 def keywords(t):
     t = unicodedata.normalize("NFKD", t.lower())
     t = "".join(c for c in t if not unicodedata.combining(c))
-    return {w for w in re.findall(r"[a-z0-9_./-]{3,}", t) if w not in STOP}
+    # Hyphens split: the Romanian enclitic article rides on one ("hook-ul" is the same word as
+    # "hook"), and a leftover "ul" is under the length floor anyway.
+    return {w for w in re.findall(r"[a-z0-9_.]{3,}", t.replace("-", " ")) if w not in STOP}
+
+
+def same_word(a, b):
+    """Inflection-tolerant equality: same word once the ending is allowed to differ.
+
+    "task"/"taskurile" (one is the other's prefix) and "legata"/"legate" (they only share a stem)
+    are the same subject; exact set intersection calls them different words and the merge never
+    fires on a Romanian sentence. Five shared leading characters is the floor for a stem match."""
+    if a == b:
+        return True
+    if min(len(a), len(b)) >= 4 and (a.startswith(b) or b.startswith(a)):
+        return True
+    n = 0
+    for x, y in zip(a, b):
+        if x != y:
+            break
+        n += 1
+    return n >= 5
 
 
 def related(d, text):
@@ -144,11 +166,13 @@ def related(d, text):
     best, score = None, 0.0
     for i in open_items(d):
         o = keywords(" ".join([i["text"]] + (i.get("more") or [])))
-        shared = k & o
-        if len(shared) < REL_WORDS:
+        shared = sum(1 for a in k if any(same_word(a, b) for b in o))
+        if shared < REL_WORDS:
             continue
-        s = len(shared) / min(len(k), len(o))
-        if s >= REL_MIN and s >= score:
+        s = shared / min(len(k), len(o))
+        if s < (REL_MIN if shared > REL_WORDS else REL_STRONG):
+            continue
+        if s >= score:
             best, score = i, s
     return best
 
@@ -495,7 +519,8 @@ def cmd_submit():
         print("That ask is part of task %d (%s), not a new one -- it was folded in there: %s"
               % (into["id"], into["text"], text))
     if merged and not queued:
-        print("Nothing new was queued. Handle it inside that task.")
+        print("Nothing new was queued. Handle it inside that task -- if that fold is wrong, run "
+              "`add <text>` to give it a row of its own.")
     if prompt and PREEMPT.search(prompt):
         print("The user explicitly said to drop everything: switch to the newest task NOW, and keep "
               "the rest of this queue.")

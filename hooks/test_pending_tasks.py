@@ -121,3 +121,29 @@ out = submit("gggggggg", "adauga o pagina de contact pe site-ul teolia")
 assert "part of task" not in out, "an unrelated ask must stay its own task:\n" + out
 assert "○ 2. adauga o pagina de contact" in board("gggggggg"), board("gggggggg")
 print("OK: related ask merged, unrelated ask queued separately")
+
+# --- relatedness is judged on the subject, through Romanian inflection ------------------------
+import importlib.util
+_spec = importlib.util.spec_from_file_location("pt", HOOK)
+pt = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(pt)
+QUEUE = {"items": [
+    {"id": 1, "text": "modifica hook: daca ii dau un task sau o intrebare care e legata de alt "
+                      "pending task sa le comaseze in acelasi task", "state": "pending"},
+    {"id": 2, "text": "fa deploy la site-ul teolia si verifica DNS", "state": "pending"},
+    {"id": 3, "text": "repara build-ul iOS pentru subpiata pe GitHub Actions", "state": "pending"},
+], "next": 4}
+for ask, want in [
+        ("si hook-ul sa comaseze si intrebarile despre pending task", 1),
+        ("cum decide hook-ul ca doua taskuri pending sunt legate?", 1),   # legate/legata, taskuri/task
+        ("scrie testul pentru comasarea taskurilor din hook", 1),
+        ("de ce nu merge deploy-ul la teolia?", 2),                       # only two shared words
+        ("build-ul iOS de la subpiata inca pica", 3),
+        ("adauga tailscale pe oracle-milan", None),
+        ("modifica statusline sa arate ora", None),                       # shares "modifica" only
+        ("verifica DNS la german-meister", None),
+        ("fa un build android pentru spark", None)]:
+    got = pt.related({"items": [dict(i) for i in QUEUE["items"]], "next": 4}, ask)
+    got = got["id"] if got else None
+    assert got == want, "related(%r) = %s, expected %s" % (ask, got, want)
+print("OK: follow-ups match their task, unrelated asks match nothing")
