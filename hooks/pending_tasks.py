@@ -90,7 +90,9 @@ PREEMPT = re.compile(r"\b(stop (everything|tot|totul)|opre[sș]te tot|las[aă] t
                      re.I)
 # Prompts that are not tasks: slash commands and bare continuations ("go on", "yes", "ok").
 SKIP = re.compile(r"^\s*(/|!|#)|^\s*(continu[aă]|continue|go on|mai departe|da|ok|okay|yes|nu|no|"
+
                   r"stop|mersi|thanks|multumesc|mul[țt]umesc)\s*[.!]?\s*$", re.I)
+NOTIFY = re.compile(r"^\s*<system-reminder>|\[SYSTEM NOTIFICATION - NOT USER INPUT\]|<task-notification>|^\s*<task-notification", re.I)
 # The one-keystroke accept. Typing it is not a new ask -- it means "do the next step you already
 # proposed", so it must never be queued as a task of its own.
 ACCEPT = re.compile(r"^\s*[.>]\s*$")
@@ -622,6 +624,11 @@ def cmd_submit():
     except Exception:
         hook = {}
     prompt = (hook.get("prompt") or "").strip()
+    # Background-agent completions and other harness notices arrive through the same hook as a
+    # typed prompt. They are not asks: on 2026-09-02 four agent reports were split into 20 fake
+    # tasks (688-706). Nothing to queue, nothing to print.
+    if NOTIFY.search(prompt or ""):
+        return
     cwd = cwd_of(hook)
     session = (hook.get("session_id") or "")[:8] or sid()
     p = path_for(cwd, session)
