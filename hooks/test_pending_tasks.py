@@ -198,3 +198,11 @@ rep = run("iiiiiiii", ["report"])
 assert "renewed until March" in rep, rep
 assert rep.count("rotate the relay password") == 1, "the note leaked onto another task:\n" + rep
 print("OK: the closing message is recorded against the task it closed")
+
+
+def test_judge_ids():
+    from pending_tasks import judge_ids
+    assert judge_ids("none", [1, 2]) == []
+    assert judge_ids("1\n3\n", [1, 2, 3]) == [1, 3]
+    assert judge_ids("Task 2 is done.", [1, 2]) == [2]
+    assert judge_ids("7", [1, 2]) == []

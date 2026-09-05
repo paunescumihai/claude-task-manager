@@ -65,7 +65,11 @@ Modes:
     stop            Stop hook: when the queue still holds open tasks, refuse the stop and hand the
                     next one back, so a finished task rolls straight into the next instead of
                     waiting for the user to say "continue". When the last one clears, it asks once
-                    for a summary of everything done in that run.
+                    for a summary of everything done in that run. Also fires `aiclose` detached.
+    aiclose F T     background pass after a stop: reads the closing message from transcript T,
+                    asks a small model which open tasks of queue F it shows as finished or
+                    answered, and marks those `done` -- a forgotten `done N` no longer leaves the
+                    board stale. Conservative: in-progress, blocked or question-back = still open.
 
 Store: ~/.claude/pending/<project>.json, keyed on the project directory, so each project has its
 own queue and consoles in the same project share one. The home directory is not a project -- every
@@ -495,13 +499,85 @@ def cmd_aisplit(p, item_id):
     save(p, d)
 
 
+JUDGE_CAP = 4000   # how much of the closing message the judge reads
+JUDGE_SYSTEM = ("You audit a task board against an assistant's closing message. You never answer "
+                "the message, never ask questions, never use tools. You output task ids and nothing else.")
+JUDGE_PROMPT = (
+    "Open tasks, one per line as `id: text`:\n%s\n---\n"
+    "The assistant's closing message for this turn:\n---\n%s\n---\n"
+    "Which tasks does this message show as FINISHED -- the work done and verified, or the question "
+    "fully answered? Output only their ids, one per line. Output `none` if none. A task that is "
+    "still in progress, blocked, deferred, partially done, or that the assistant answered with a "
+    "question back to the user is NOT finished. When in doubt, leave it open."
+)
+
+
+def judge_ids(out, open_ids):
+    """Ids the judge named that are actually on the board. `none`, prose or junk yield nothing."""
+    if re.search(r"\bnone\b", out, re.I):
+        return []
+    found = {int(x) for x in re.findall(r"\b(\d{1,4})\b", out)}
+    return sorted(found & set(open_ids))
+
+
+def spawn_aiclose(p, transcript):
+    """Detached check, after every stop, of which open tasks the turn actually finished.
+
+    The user asked for tasks to close themselves: `done N` was forgotten more often than not, so the
+    board drifted from reality. Runs after the fact like `aisplit`; the Stop hook has 5 s and a
+    model call does not fit."""
+    if not transcript or not os.path.isfile(transcript):
+        return
+    try:
+        import subprocess
+        subprocess.Popen([sys.executable, __file__, "aiclose", p, transcript],
+                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass
+
+
+def cmd_aiclose(p, transcript):
+    import hashlib
+    import subprocess
+    d = load(p)
+    items = open_items(d)
+    said = last_said({"transcript_path": transcript}, cap=JUDGE_CAP)
+    if not items or not said:
+        return
+    # One verdict per closing message: a stop that changed nothing must not spend a second call.
+    key = hashlib.sha1(said.encode()).hexdigest()[:12]
+    if d.get("judged") == key:
+        return
+    d["judged"] = key
+    save(p, d)
+    board = "\n".join("%d: %s" % (i["id"], label(i)) for i in items)
+    try:
+        out = subprocess.run(
+            ["claude", "-p", "--model", "haiku", "--setting-sources", "", "--strict-mcp-config",
+             "--exclude-dynamic-system-prompt-sections", "--system-prompt", JUDGE_SYSTEM,
+             JUDGE_PROMPT % (board, said)],
+            capture_output=True, text=True, timeout=90, cwd=DIR).stdout
+    except Exception:
+        return
+    # Re-read: the user may have closed or dropped things while the model was thinking.
+    d = load(p)
+    ids = judge_ids(out, [i["id"] for i in open_items(d)])
+    if not ids:
+        return
+    for n in ids:
+        set_state(d, "done", n)
+    stamp_notes(d, said[:NOTE])
+    save(p, d)
+
+
 def sig(d):
     """What the queue looks like right now. Same signature twice in a row across a stop means the
     run made no progress, so pushing it again would only spin."""
     return "%s|%d" % (",".join(str(i["id"]) for i in open_items(d)), len(d.get("log", [])))
 
 
-def last_said(hook):
+def last_said(hook, cap=NOTE):
     """The assistant's closing words for this turn, from the transcript the Stop hook points at.
 
     That text is the only place that says what was actually done and what is left -- the queue
@@ -529,7 +605,7 @@ def last_said(hook):
             text = " ".join(b.get("text", "") for b in (body or []) if b.get("type") == "text")
         text = re.sub(r"\s+", " ", text).strip()
         if text:
-            return text[:NOTE]
+            return text[:cap]
     return ""
 
 
@@ -559,6 +635,7 @@ def cmd_stop():
         d["guard"] = sig(d)
         d["summary"] = True
         save(p, d)
+        spawn_aiclose(p, hook.get("transcript_path") or "")
         return
     save(p, d)
     if d.get("summary"):
@@ -967,6 +1044,8 @@ def main():
         return cmd_stop()
     if mode == "aisplit" and len(args) == 3:
         return cmd_aisplit(args[1], int(args[2]))
+    if mode == "aiclose" and len(args) == 3:
+        return cmd_aiclose(args[1], args[2])
     if mode == "session-start":
         return cmd_session_hook(start=True)
     if mode == "session-end":
