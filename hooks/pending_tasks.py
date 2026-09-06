@@ -108,11 +108,21 @@ ACCEPT = re.compile(r"^\s*[.>]\s*$")
 NUM = re.compile(r"(?:(?<=^)|(?<=[\s;,]))(\d{1,2})\s*[:).]\s+")
 BULLET = re.compile(r"^\s*(?:[-*\u2022]|\d{1,2}[.)])\s+(.+)$", re.M)
 MIN_WORDS = 3          # a fragment shorter than this is a scrap, not an ask
+# A big pasted block (spec, email, log, doc) is one ask, whatever bullets or numbering it carries
+# inside -- splitting it would turn the pasted content into a fake backlog.
+PASTE_WORDS = 150
+PASTE_LINES = 12
+
+
+def pasted(prompt):
+    return len(prompt.split()) >= PASTE_WORDS or prompt.count("\n") >= PASTE_LINES
 
 
 def split_tasks(prompt):
     """[task text, ...] -- one entry per ask the prompt carries, the whole prompt if just one."""
     one = " ".join(prompt.split())
+    if pasted(prompt):
+        return [one]
     hits = list(NUM.finditer(one))
     if len(hits) >= 2:
         segs = []
@@ -747,7 +757,7 @@ def cmd_submit():
             save(p, d)
             # Only a genuinely new task gets the second-opinion splitter: re-splitting an ask that
             # was folded into an existing task would undo the merge.
-            if len(queued) == 1 and not merged:
+            if len(queued) == 1 and not merged and not pasted(prompt):
                 spawn_aisplit(p, queued[0]["id"], queued[0]["text"])
     prune(keep=(p,))
     items = open_items(d)

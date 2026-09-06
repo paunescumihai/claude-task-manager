@@ -206,3 +206,14 @@ def test_judge_ids():
     assert judge_ids("1\n3\n", [1, 2, 3]) == [1, 3]
     assert judge_ids("Task 2 is done.", [1, 2]) == [2]
     assert judge_ids("7", [1, 2]) == []
+
+
+def test_pasted_block_is_one_task():
+    """A big copy-pasted block (spec, email, log) is one ask even when it carries bullets."""
+    from pending_tasks import split_tasks, pasted
+    doc = "implementeaza specul de mai jos\n" + "\n".join(
+        "- cerinta %d: sistemul trebuie sa faca lucrul acesta corect" % k for k in range(15))
+    assert pasted(doc)
+    assert len(split_tasks(doc)) == 1
+    assert not pasted("1: fa deploy la site-ul teolia 2: repara build-ul iOS pentru subpiata")
+    assert len(split_tasks("1: fa deploy la site-ul teolia 2: repara build-ul iOS pentru subpiata")) == 2
