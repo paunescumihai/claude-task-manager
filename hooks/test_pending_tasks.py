@@ -217,3 +217,20 @@ def test_pasted_block_is_one_task():
     assert len(split_tasks(doc)) == 1
     assert not pasted("1: fa deploy la site-ul teolia 2: repara build-ul iOS pentru subpiata")
     assert len(split_tasks("1: fa deploy la site-ul teolia 2: repara build-ul iOS pentru subpiata")) == 2
+
+
+def test_submit_sweep_folds_answer_and_closes():
+    """The judge on submit: `answer: N` folds the new row into task N, plain ids close tasks,
+    and the row the prompt itself queued is never closed as a side effect."""
+    from pending_tasks import judge_answer, fold_answer, judge_ids
+    assert judge_answer("answer: 3", [1, 3]) == 3
+    assert judge_answer("answer: 9", [1, 3]) is None
+    assert judge_answer("1\nnone", [1, 3]) is None
+    d = {"items": [{"id": 3, "text": "deploy", "state": "doing"},
+                   {"id": 5, "text": "da, pe hosting2", "state": "pending"}], "next": 6}
+    fold_answer(d, 3, 5)
+    assert [i["id"] for i in d["items"]] == [3] and d["items"][0]["more"] == ["da, pe hosting2"]
+    fold_answer(d, 3, 5)                       # already folded: no-op, no crash
+    import re
+    out = "answer: 3\n1"                       # the answered id must not read as a `done`
+    assert judge_ids(re.sub(r"answer:\s*\d+", "", out, flags=re.I), [1, 3]) == [1]

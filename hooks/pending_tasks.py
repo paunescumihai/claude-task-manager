@@ -70,6 +70,9 @@ Modes:
                     asks a small model which open tasks of queue F it shows as finished or
                     answered, and marks those `done` -- a forgotten `done N` no longer leaves the
                     board stale. Conservative: in-progress, blocked or question-back = still open.
+                    `submit` fires it too, with the user's new message as extra evidence: an "ok,
+                    merge" closes the task it confirms, and a reply to a question the assistant
+                    asked is folded into that task instead of standing as a new one.
 
 Store: ~/.claude/pending/<project>.json, keyed on the project directory, so each project has its
 own queue and consoles in the same project share one. The home directory is not a project -- every
@@ -520,6 +523,14 @@ JUDGE_PROMPT = (
     "still in progress, blocked, deferred, partially done, or that the assistant answered with a "
     "question back to the user is NOT finished. When in doubt, leave it open."
 )
+JUDGE_USER = (
+    "\n---\nThe user's next message, sent after that closing message:\n---\n%s\n---\n"
+    "Two extra rules. (1) If the user's message confirms a task as done (\"ok\", \"merge\", "
+    "\"perfect\", \"multumesc\", moving on without objection to a task the closing message "
+    "reported as done), that task is FINISHED too. (2) If the user's message is a REPLY to a "
+    "question the assistant asked about one open task, output `answer: <id>` on its own line -- "
+    "that task stays open and continues. A new, unrelated ask is neither."
+)
 
 
 def judge_ids(out, open_ids):
@@ -530,7 +541,13 @@ def judge_ids(out, open_ids):
     return sorted(found & set(open_ids))
 
 
-def spawn_aiclose(p, transcript):
+def judge_answer(out, open_ids):
+    m = re.search(r"answer:\s*(\d{1,4})", out, re.I)
+    n = int(m.group(1)) if m else None
+    return n if n in open_ids else None
+
+
+def spawn_aiclose(p, transcript, prompt="", new_id=None):
     """Detached check, after every stop, of which open tasks the turn actually finished.
 
     The user asked for tasks to close themselves: `done N` was forgotten more often than not, so the
@@ -540,45 +557,64 @@ def spawn_aiclose(p, transcript):
         return
     try:
         import subprocess
-        subprocess.Popen([sys.executable, __file__, "aiclose", p, transcript],
+        subprocess.Popen([sys.executable, __file__, "aiclose", p, transcript, prompt[:1000],
+                          str(new_id or 0)],
                          stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                          stderr=subprocess.DEVNULL, start_new_session=True)
     except Exception:
         pass
 
 
-def cmd_aiclose(p, transcript):
+def cmd_aiclose(p, transcript, prompt="", new_id=0):
     import hashlib
     import subprocess
     d = load(p)
-    items = open_items(d)
+    # The task the prompt itself just queued is evidence, not a candidate: it cannot be finished yet.
+    items = [i for i in open_items(d) if i["id"] != new_id]
     said = last_said({"transcript_path": transcript}, cap=JUDGE_CAP)
     if not items or not said:
         return
     # One verdict per closing message: a stop that changed nothing must not spend a second call.
-    key = hashlib.sha1(said.encode()).hexdigest()[:12]
+    key = hashlib.sha1((said + "\0" + prompt).encode()).hexdigest()[:12]
     if d.get("judged") == key:
         return
     d["judged"] = key
     save(p, d)
     board = "\n".join("%d: %s" % (i["id"], label(i)) for i in items)
+    ask = JUDGE_PROMPT % (board, said)
+    if prompt:
+        ask += JUDGE_USER % prompt
     try:
         out = subprocess.run(
             ["claude", "-p", "--model", "haiku", "--setting-sources", "", "--strict-mcp-config",
-             "--exclude-dynamic-system-prompt-sections", "--system-prompt", JUDGE_SYSTEM,
-             JUDGE_PROMPT % (board, said)],
+             "--exclude-dynamic-system-prompt-sections", "--system-prompt", JUDGE_SYSTEM, ask],
             capture_output=True, text=True, timeout=90, cwd=DIR).stdout
     except Exception:
         return
     # Re-read: the user may have closed or dropped things while the model was thinking.
     d = load(p)
-    ids = judge_ids(out, [i["id"] for i in open_items(d)])
-    if not ids:
+    open_ids = [i["id"] for i in open_items(d) if i["id"] != new_id]
+    ans = judge_answer(out, open_ids) if prompt else None
+    ids = judge_ids(re.sub(r"answer:\s*\d+", "", out, flags=re.I), open_ids)
+    if not ids and ans is None:
         return
     for n in ids:
         set_state(d, "done", n)
+    if ans is not None and ans not in ids:
+        fold_answer(d, ans, new_id)
     stamp_notes(d, said[:NOTE])
     save(p, d)
+
+
+def fold_answer(d, into_id, new_id):
+    """The user's message answered a question about task `into_id`: attach it there and take the
+    row the splitter gave it off the board, so the answer does not sit as a task of its own."""
+    into = next((i for i in d["items"] if i["id"] == into_id), None)
+    new = next((i for i in d["items"] if i["id"] == new_id and i["state"] == "pending"), None)
+    if not into or not new:
+        return
+    into.setdefault("more", []).append(new["text"])
+    d["items"] = [i for i in d["items"] if i["id"] != new_id]
 
 
 def sig(d):
@@ -759,6 +795,10 @@ def cmd_submit():
             # was folded into an existing task would undo the merge.
             if len(queued) == 1 and not merged and not pasted(prompt):
                 spawn_aisplit(p, queued[0]["id"], queued[0]["text"])
+        # Sweep the rest of the board: a task the last turn finished, or one the user just
+        # confirmed, closes now instead of waiting for a `done N` nobody types.
+        spawn_aiclose(p, hook.get("transcript_path") or "", prompt,
+                      queued[0]["id"] if len(queued) == 1 else 0)
     prune(keep=(p,))
     items = open_items(d)
     if not items:
@@ -1054,8 +1094,9 @@ def main():
         return cmd_stop()
     if mode == "aisplit" and len(args) == 3:
         return cmd_aisplit(args[1], int(args[2]))
-    if mode == "aiclose" and len(args) == 3:
-        return cmd_aiclose(args[1], args[2])
+    if mode == "aiclose" and len(args) >= 3:
+        return cmd_aiclose(args[1], args[2], args[3] if len(args) > 3 else "",
+                           int(args[4]) if len(args) > 4 else 0)
     if mode == "session-start":
         return cmd_session_hook(start=True)
     if mode == "session-end":
