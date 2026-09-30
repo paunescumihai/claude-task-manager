@@ -11,16 +11,24 @@ CLAUDE_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 printf '%s' "$stdin_json" > /tmp/claude-statusline-last.json 2>/dev/null
 
 # --- one parse pass over the payload ---
-IFS='|' read -r pct5h pct7d pctctx json_cwd json_proj json_sid model_name model_id cc_ver cost_usd lines_add lines_del <<< "$(python3 -c "
-import json,sys
+IFS='|' read -r pct5h pct7d pctctx tocompact json_cwd json_proj json_sid model_name model_id cc_ver cost_usd lines_add lines_del <<< "$(python3 -c "
+import json,sys,os
 def out(*a): print(*a, sep='|')
 try:
   d=json.load(sys.stdin)
   rl=d.get('rate_limits') or {}
   fh=(rl.get('five_hour') or {}).get('used_percentage')
   sd=(rl.get('seven_day') or {}).get('used_percentage')
-  ctx=d.get('context') or {}
-  used, maxt = ctx.get('tokens_used'), ctx.get('tokens_max')
+  cw=d.get('context_window') or {}
+  pct=cw.get('used_percentage')
+  size=cw.get('context_window_size') or 0
+  used=size*pct/100 if pct is not None else 0
+  # ponytail: auto-compact point estimated as window minus 20k output reserve minus 13k buffer (Claude Code's
+  # defaults); CLAUDE_AUTOCOMPACT_PCT_OVERRIDE wins when set. Recheck if compaction fires far from this.
+  ov=os.environ.get('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE')
+  at=size*float(ov)/100 if ov else size-33000
+  left=max(0,at-used)
+  fmt=lambda n: '%.1fM'%(n/1e6) if n>=1e6 else '%dk'%round(n/1000)
   ws=d.get('workspace') or {}
   m=d.get('model') or {}
   if isinstance(m,str): m={'display_name':m,'id':m}
@@ -28,7 +36,8 @@ try:
   usd=c.get('total_cost_usd')
   out(round(fh) if fh is not None else '',
       round(sd) if sd is not None else '',
-      round(used/maxt*100) if used and maxt else '',
+      round(pct) if pct is not None else '',
+      fmt(left) if size else '',
       ws.get('current_dir') or d.get('cwd') or '',
       ws.get('project_dir') or ws.get('current_dir') or d.get('cwd') or '',
       d.get('session_id') or '',
@@ -39,7 +48,7 @@ try:
       c.get('total_lines_added') or '',
       c.get('total_lines_removed') or '')
 except Exception:
-  out(*(['']*12))
+  out(*(['']*13))
 " <<< "$stdin_json" 2>/dev/null)"
 
 # --- colors (plain escapes so this works in any terminal Claude Code renders into) ---
@@ -85,6 +94,7 @@ rate_part=""
 [ -n "$pct7d" ] && rate_part="${rate_part:+$rate_part }${D}7d${R} $(heat "$pct7d")${pct7d}%${R}"
 ctx_part=""
 [ -n "$pctctx" ] && ctx_part="${D}ctx${R} $(heat "$pctctx")${pctctx}%${R}"
+[ -n "$tocompact" ] && ctx_part="${ctx_part} ${D}compact în${R} ${tocompact}"
 
 # --- session cost and churn, when Claude Code reports them ---
 cost_part=""
